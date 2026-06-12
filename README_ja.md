@@ -479,6 +479,32 @@ pixi install
   — もしくは Linux/Colab で学習。CPU 学習は可能ですが遅いです。
 - `win-64` の解決自体は**未検証**です。`pixi install` を実行し、競合が出たら共有してください。
 
+### Windows の WSL2 — 追加作業なし（WSL2 は linux-64 そのもの）
+
+WSL2 は本物の linux-64 バイナリを実行するため、**既存のロックファイルがそのまま使えます** —
+リモート Linux で動作実証済みのスタック（libstdc++ preload 修正込み）と同一です。WSL2 の
+Ubuntu（22.04+ 推奨）内で、通常の Linux 手順（pixi インストール → `git clone` → `pixi install`）
+を実行してください。
+
+- **GPU:** CUDA は Windows 側の NVIDIA ドライバ経由で動きます — ドライバは *Windows にだけ*
+  インストール（WSL 内に Linux ドライバを入れない）。`--device cuda` がそのまま使えます。
+  確認: `pixi run python -c "import torch; print(torch.cuda.is_available())"`。
+- **train / policy-test / viz:** 完全対応 — Windows マシンでこのリポジトリを使う場合、WSL2 が
+  推奨ルートです。
+- **ロボットのシリアル（teleop/record）:** WSL2 にネイティブの USB パススルーは無いため、
+  [usbipd-win](https://github.com/dorssel/usbipd-win) でポートを転送します（PowerShell で
+  `usbipd bind --busid <X-Y>` を管理者で一度、以降は挿し直すたび
+  `usbipd attach --wsl --busid <X-Y>`）→ `/dev/ttyACM0` として見えます。新しめの標準 WSL2
+  カーネルが必要。動きますが手間は増えます。
+- **カメラ: 実質非対応。** 標準 WSL2 カーネルには UVC Web カメラドライバが無く、
+  `find-cameras` は USB カメラを検出できません（回避はカーネル自前ビルドのみ）。カメラ付き
+  録画はネイティブ Windows / macOS / Linux で行ってください。
+- **ビューア/キー操作:** Windows 11 なら WSLg で Rerun ビューアが表示できます。それ以外は
+  `--no-display` と `--episode-time` で。
+
+**結論:** 計算系（train / policy-test / viz）は WSL2、ロボット系は USB に直接アクセスできる
+マシンで、という分担が現実的です。
+
 ### Intel Mac (osx-64) — `osx-64` を追加
 
 - 動画は Windows と同じく torchcodec が Intel macOS でも除外され、自動で `pyav` を使います。それ以外は

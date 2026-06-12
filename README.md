@@ -520,6 +520,33 @@ pixi install
 - The `win-64` solve itself is **untested here**; run `pixi install` and report
   any conflict.
 
+### Windows via WSL2 — nothing to add (it *is* linux-64)
+
+WSL2 runs real linux-64 binaries, so the **existing lockfile covers it** — same
+stack that is verified working on a remote Linux box (including the libstdc++
+preload fix). Inside a WSL2 Ubuntu (22.04+ recommended), follow the normal Linux
+steps: install pixi, `git clone`, `pixi install`.
+
+- **GPU:** CUDA works through the Windows NVIDIA driver — install the driver on
+  *Windows only* (never a Linux driver inside WSL), then `--device cuda` just
+  works. Check: `pixi run python -c "import torch; print(torch.cuda.is_available())"`.
+- **Train / policy-test / viz:** fully supported — WSL2 is the recommended way
+  to use this repo on a Windows machine.
+- **Robot serial (teleop/record):** WSL2 has no native USB passthrough; forward
+  the port with [usbipd-win](https://github.com/dorssel/usbipd-win) (PowerShell:
+  `usbipd bind --busid <X-Y>` once as admin, then `usbipd attach --wsl --busid <X-Y>`
+  after each replug) — it appears as `/dev/ttyACM0`. Needs a recent stock WSL2
+  kernel; works but adds friction.
+- **Cameras: effectively not supported.** The stock WSL2 kernel lacks the UVC
+  webcam driver, so `find-cameras` won't see USB webcams (a custom-built kernel
+  is the only workaround). For recording with cameras, use native Windows,
+  macOS, or Linux.
+- **Viewer/keys:** on Windows 11, WSLg displays the Rerun viewer; otherwise use
+  `--no-display` and `--episode-time`.
+
+**Bottom line:** WSL2 for the compute half (train / policy-test / viz), a
+machine with real USB access for the robot half.
+
 ### Intel Mac (osx-64) — add `osx-64`
 
 - Same as Windows for video: torchcodec is excluded on Intel macOS too, so `pyav`
