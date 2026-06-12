@@ -323,6 +323,79 @@ pixi run upload --repo-id record-test --private --tags so101,demo
 つまり全体の流れは **記録 → replay(確認) → upload(任意) → 学習 → 評価** です。学習済みポリシーは
 `train --push-repo-id <name>` で push できます（既定はローカル保持）。
 
+### 6.5 SSH 先の Linux で検証する — ロボット不要
+
+ハードが要るステップ以外はヘッドレスで動くので、SSH 先の GPU マシンでリポジトリの検証と学習が
+できます:
+
+**1. データセットを送る（ラップトップで録画済みのもの）:**
+
+```bash
+# 方法 A — Hub 経由: ラップトップで
+pixi run upload --repo-id record-test
+# （Linux 側では train/policy-test が自動ダウンロード。private なら `pixi run hf-login`）
+
+# 方法 B — 直接コピー（Hub アカウント不要）:
+rsync -av ~/.cache/huggingface/lerobot/<user>/record-test/ \
+  linux:~/.cache/huggingface/lerobot/<user>/record-test/
+```
+
+**2. Linux 側でセットアップとスモークテスト:**
+
+```bash
+git clone <this-repo> && cd lecture_lerobot_teleop
+pixi install                       # linux-64 はロック済み
+pixi run verify
+pixi run python -c "import torch; print(torch.cuda.is_available())"
+```
+
+**3. 学習（まず短いスモーク → 本番）:**
+
+```bash
+pixi run train --repo-id record-test --steps 200 --save-freq 100   # スモーク
+pixi run train --repo-id record-test --steps 20000 --device cuda
+```
+
+**4. ロボット無しの「評価」— オフライン推論テスト:**
+
+```bash
+pixi run policy-test --policy outputs/train/act_record-test/checkpoints/last \
+  --repo-id record-test --device cuda
+```
+
+実機 `eval` と同一の推論パイプライン（ポリシーロード・前後処理・動画デコード・`predict_action`）を
+録画フレームで回し、レイテンシ（Hz）と録画アクションとの平均乖離を表示します（このリポジトリの
+実データで動作確認済み）。
+
+**5. SSH 越しのデータ確認:** Rerun の記録ファイルを保存してローカルで見る:
+
+```bash
+# Linux 側
+pixi run viz --repo-id record-test --episode 0 --save 1 --output-dir outputs/viz
+# ラップトップ側
+scp linux:~/lecture_lerobot_teleop/outputs/viz/*.rrd . && rerun *.rrd
+```
+
+**6. ポリシーを持ち帰る**: `outputs/train/...` を rsync で戻すか、`train --push-repo-id
+act_record-test` で push して、ラップトップで `pixi run eval --policy <you>/act_record-test ...`。
+
+実機ステップ（`teleop` / `record` / `eval` / `replay`）はハードのあるマシンが必要です。ヘッドレスでは
+キーボード操作と Rerun ウィンドウも使えません（`--no-display` と `--episode-time` で代替）。
+
+> **学習中の `Could not load libtorchcodec` / `GLIBCXX_3.4.29 not found`:**
+> ホストのシステム `libstdc++` が古く、環境内の ffmpeg スタックと合わない状態です（pip 版 torch が
+> システムの libstdc++ を先にロードするため）。`pixi.toml` で修正済み: linux-64 では環境内の新しい
+> `libstdc++` を `LD_PRELOAD` するため、torchcodec がフルスピードで動きます。確認:
+> `pixi run python -c "from torchcodec.decoders import VideoDecoder; print('ok')"`。
+> 保険として、torchcodec がロードできない場合は `train`/`policy-test` が自動で `pyav` に
+> フォールバックします（手動指定: `--dataset.video_backend=pyav`）。
+
+> **リモートで `RepositoryNotFoundError … datasets/local/record-test`:**
+> `--repo-id name`（名前のみ）には名前空間の解決が必要です。ツールは HF ログイン、未ログイン時は
+> `~/.cache/huggingface/lerobot/<user>/name` にある既存ローカルデータセットから解決します。どちらも
+> 無い場合は手順付きで先にエラーを出します。対処: 先にデータセットを rsync（上の方法 B）、フル ID を
+> 渡す（`--repo-id <user>/record-test`）、または `pixi run hf-login`。
+
 ## 安全: 動きを緩やかにする・止める
 
 **フォロワーを遅くする（急な同期を防ぐ）。** 既定ではフォロワーはリーダーの姿勢へ**全速**で動くため、

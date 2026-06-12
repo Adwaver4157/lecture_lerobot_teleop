@@ -343,6 +343,83 @@ So the full pipeline is: **record → replay (check) → upload (optional) → t
 eval**. The trained policy is pushed with `train --push-repo-id <name>` (or kept
 local by default).
 
+### 6.5 Verify on a remote (SSH) Linux machine — no robot needed
+
+Everything except hardware steps works headless, so you can validate the repo and
+run training on a GPU box over SSH:
+
+**1. Get the dataset there (recorded on your laptop):**
+
+```bash
+# Option A — via the Hub: on the laptop
+pixi run upload --repo-id record-test
+# (on Linux, train/policy-test auto-download it; `pixi run hf-login` if private)
+
+# Option B — direct copy, no Hub account needed:
+rsync -av ~/.cache/huggingface/lerobot/<user>/record-test/ \
+  linux:~/.cache/huggingface/lerobot/<user>/record-test/
+```
+
+**2. Set up and smoke-test on the Linux box:**
+
+```bash
+git clone <this-repo> && cd lecture_lerobot_teleop
+pixi install                       # linux-64 is already in the lockfile
+pixi run verify
+pixi run python -c "import torch; print(torch.cuda.is_available())"
+```
+
+**3. Train (short smoke first, then real):**
+
+```bash
+pixi run train --repo-id record-test --steps 200 --save-freq 100   # smoke
+pixi run train --repo-id record-test --steps 20000 --device cuda
+```
+
+**4. "Eval" without a robot — offline inference test:**
+
+```bash
+pixi run policy-test --policy outputs/train/act_record-test/checkpoints/last \
+  --repo-id record-test --device cuda
+```
+
+This runs the exact `eval` inference pipeline (policy load, processors, video
+decode, `predict_action`) on recorded frames and reports latency (Hz) and the
+mean deviation from the recorded actions — verified working on this repo's data.
+
+**5. Inspect data over SSH:** save a Rerun recording and view it locally:
+
+```bash
+# on Linux
+pixi run viz --repo-id record-test --episode 0 --save 1 --output-dir outputs/viz
+# on the laptop
+scp linux:~/lecture_lerobot_teleop/outputs/viz/*.rrd . && rerun *.rrd
+```
+
+**6. Bring the policy back** for real-robot eval on the laptop: rsync
+`outputs/train/...` back, or push it (`train --push-repo-id act_record-test`)
+and run `pixi run eval --policy <you>/act_record-test ...` on the laptop.
+
+Real-robot steps (`teleop`, `record`, `eval`, `replay`) still need the hardware
+machine; the keyboard listener and Rerun window are also unavailable headless
+(use `--no-display` and `--episode-time`).
+
+> **`Could not load libtorchcodec` / `GLIBCXX_3.4.29 not found` during training:**
+> the host's system `libstdc++` is too old for the env's ffmpeg stack
+> (pip-installed torch loads the system libstdc++ first). Fixed in `pixi.toml`:
+> on linux-64 the env's own newer `libstdc++` is `LD_PRELOAD`ed, so torchcodec
+> loads at full speed. Verify with
+> `pixi run python -c "from torchcodec.decoders import VideoDecoder; print('ok')"`.
+> As a safety net, `train`/`policy-test` still auto-fall back to the `pyav`
+> decoder if torchcodec can't load (manual override: `--dataset.video_backend=pyav`).
+
+> **`RepositoryNotFoundError … datasets/local/record-test` on the remote box:**
+> a bare `--repo-id name` needs a namespace. The tool resolves it from your HF
+> login, or — when not logged in — from an existing local dataset under
+> `~/.cache/huggingface/lerobot/<user>/name`. If neither exists it now errors
+> early with instructions. Fix: rsync the dataset first (Option B above), pass
+> the full id (`--repo-id <user>/record-test`), or `pixi run hf-login`.
+
 ## Safety: gentle motion & stopping
 
 **Slow the follower (avoid the scary snap).** By default the follower drives to

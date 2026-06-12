@@ -15,6 +15,15 @@ platforms = ["osx-arm64", "linux-64"]
 [system-requirements]
 libc = "2.31"
 
+# On hosts with an old system libstdc++ (e.g. Ubuntu 20.04), pip-installed torch
+# loads the system libstdc++ first, which lacks the GLIBCXX symbols needed by the
+# env's ffmpeg stack — torchcodec then fails to load. The env ships its own newer
+# libstdc++ (conda-forge libstdcxx); preloading it fixes the load order. Newer
+# libstdc++ is backward-compatible, so this is safe for every other tool too.
+# (Harmless "cannot be preloaded" warning if run before `pixi install`.)
+[target.linux-64.activation.env]
+LD_PRELOAD = "$CONDA_PREFIX/lib/libstdc++.so.6"
+
 # --- conda-forge packages -------------------------------------------------
 # Python and the native ffmpeg build (used by LeRobot for video encode/decode)
 # come from conda-forge so the binary codecs are present and reproducible.
@@ -63,6 +72,7 @@ viz = "python scripts/so101.py viz"                  # usage: pixi run viz --rep
 upload = "python scripts/so101.py upload"            # usage: pixi run upload --repo-id name  (existing local dataset)
 train = "python scripts/so101.py train"              # usage: pixi run train --repo-id name [--policy act]
 eval = "python scripts/so101.py eval"                # usage: pixi run eval --policy <ckpt> --task "..." --repo-id eval_name
+policy-test = "python scripts/so101.py policy-test"  # offline inference smoke test (no robot needed)
 
 # Low-level fallback if you prefer raw lerobot port detection:
 find-port = "lerobot-find-port"

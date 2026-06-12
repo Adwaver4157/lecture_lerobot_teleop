@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -120,11 +121,46 @@ def _hf_user() -> str | None:
         return None
 
 
-def _resolve_repo(repo_id: str) -> str:
-    """Turn a bare `name` into `<hf-user-or-local>/name`; pass `user/name` through unchanged."""
+def _resolve_repo(repo_id: str, for_creation: bool = False) -> str:
+    """Turn a bare `name` into `user/name`; pass `user/name` through unchanged.
+
+    Namespace lookup order: explicit (has '/') > HF login > existing local dataset
+    under $HF_LEROBOT_HOME (any namespace). When creating a new dataset without an
+    HF login, fall back to the 'local' namespace; when *consuming* one, error out
+    instead — a guessed namespace would send lerobot to the Hub and 401/404 there.
+    """
     if "/" in repo_id:
         return repo_id
-    return f"{_hf_user() or 'local'}/{repo_id}"
+    user = _hf_user()
+    if user:
+        return f"{user}/{repo_id}"
+    if for_creation:
+        typer.secho(f"(not logged in to HF — creating dataset under local/{repo_id})", fg="yellow")
+        return f"local/{repo_id}"
+    try:
+        from lerobot.utils.constants import HF_LEROBOT_HOME
+
+        candidates = sorted(
+            p
+            for p in Path(HF_LEROBOT_HOME).glob(f"*/{repo_id}")
+            # Skip junk dirs: a HF namespace is alphanumeric with -_. and no spaces.
+            if p.is_dir() and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", p.parent.name)
+        )
+    except Exception:
+        candidates = []
+    if len(candidates) == 1:
+        ns = candidates[0].parent.name
+        typer.secho(f"(not logged in to HF — using local dataset {ns}/{repo_id})", fg="yellow")
+        return f"{ns}/{repo_id}"
+    if len(candidates) > 1:
+        names = ", ".join(f"{c.parent.name}/{repo_id}" for c in candidates)
+        raise typer.BadParameter(f"Multiple local datasets named '{repo_id}' ({names}). Pass the full 'user/name'.")
+    raise typer.BadParameter(
+        f"Can't resolve '{repo_id}': not logged in to Hugging Face and no local dataset named "
+        f"'{repo_id}' under ~/.cache/huggingface/lerobot. Either pass the full id (e.g. "
+        f"<user>/{repo_id}), run `pixi run hf-login`, or copy the dataset to "
+        f"~/.cache/huggingface/lerobot/<user>/{repo_id} first (rsync)."
+    )
 
 
 def _resolve_policy(policy: str) -> str:
@@ -160,6 +196,22 @@ def _maybe_overwrite(repo: str, overwrite: bool) -> None:
     if root.exists():
         typer.secho(f"--overwrite: removing existing dataset at {root}", fg="yellow")
         shutil.rmtree(root)
+
+
+def _safe_video_backend() -> str | None:
+    """Return 'pyav' when torchcodec is installed but cannot actually load its native libs
+    (e.g. old system libstdc++ on the host clashing with the env's ffmpeg); None = use lerobot default.
+
+    lerobot's own default only checks that torchcodec is *installed*, so a broken load
+    crashes mid-training in a dataloader worker. pyav ships its own ffmpeg and always works.
+    """
+    try:
+        from torchcodec.decoders import VideoDecoder  # noqa: F401
+
+        return None
+    except Exception:
+        typer.secho("(torchcodec can't load on this machine — using video_backend=pyav)", fg="yellow")
+        return "pyav"
 
 
 def _auto_device() -> str:
@@ -384,7 +436,7 @@ def record(
     cfg = _load()
     lead = _require(cfg, "leader")
     foll = _require(cfg, "follower")
-    repo = _resolve_repo(repo_id)
+    repo = _resolve_repo(repo_id, for_creation=True)
     _maybe_overwrite(repo, overwrite)
     cmd = [
         "lerobot-record",
@@ -444,7 +496,15 @@ def train(
         cmd.append(f"--batch_size={batch_size}")
     if save_freq is not None:
         cmd.append(f"--save_freq={save_freq}")
-    cmd.append(f"--policy.repo_id={_resolve_repo(push_repo_id)}" if push_repo_id else "--policy.push_to_hub=false")
+    if not any(a.startswith("--dataset.video_backend") for a in ctx.args):
+        backend = _safe_video_backend()
+        if backend:
+            cmd.append(f"--dataset.video_backend={backend}")
+    cmd.append(
+        f"--policy.repo_id={_resolve_repo(push_repo_id, for_creation=True)}"
+        if push_repo_id
+        else "--policy.push_to_hub=false"
+    )
     _run(cmd + list(ctx.args))
 
 
@@ -465,7 +525,7 @@ def evaluate(
     """Run a trained policy on the follower and record eval episodes (lerobot-record + --policy.path)."""
     cfg = _load()
     foll = _require(cfg, "follower")  # the policy drives the follower; no leader needed
-    repo = _resolve_repo(repo_id)
+    repo = _resolve_repo(repo_id, for_creation=True)
     name = repo.split("/")[-1]
     if not name.startswith("eval_"):
         raise typer.BadParameter(
@@ -516,6 +576,90 @@ def viz(
     """Visualize a recorded episode (frames, states, actions) in a Rerun viewer (lerobot-dataset-viz)."""
     cmd = ["lerobot-dataset-viz", "--repo-id", _resolve_repo(repo_id), "--episode-index", str(episode)]
     _run(cmd + list(ctx.args))
+
+
+@app.command("policy-test")
+def policy_test(
+    policy: str = typer.Option(..., "--policy", help="Trained policy: a checkpoint dir or a Hub repo id."),
+    repo_id: str = typer.Option(..., "--repo-id", help="Dataset whose recorded frames are used as observations."),
+    device: str = typer.Option(None, "--device", help="cuda / mps / cpu (auto-detected if omitted)."),
+    steps: int = typer.Option(20, "--steps", help="Number of inference steps to run."),
+    episode: int = typer.Option(0, "--episode", help="Episode to take frames from."),
+) -> None:
+    """Offline inference smoke test: run the trained policy on recorded dataset frames — no robot needed.
+
+    Exercises the same pipeline as `eval` (policy load, pre/post-processors, video decode,
+    predict_action) and reports latency plus deviation from the recorded actions.
+    """
+    import numpy as np
+    import torch
+
+    from lerobot.configs.policies import PreTrainedConfig
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    from lerobot.policies.factory import make_policy, make_pre_post_processors
+    from lerobot.utils.control_utils import predict_action
+    from lerobot.utils.device_utils import get_safe_torch_device
+
+    dev = device or _auto_device()
+    pol_path = _resolve_policy(policy)
+    repo = _resolve_repo(repo_id)
+
+    typer.secho(f"Loading dataset {repo} (downloads from the Hub if not cached locally)...", fg="blue")
+    dataset = LeRobotDataset(repo, video_backend=_safe_video_backend())
+    ep_from = dataset.meta.episodes[episode]["dataset_from_index"]
+    ep_to = dataset.meta.episodes[episode]["dataset_to_index"]
+
+    typer.secho(f"Loading policy from {pol_path} on {dev}...", fg="blue")
+    cfg = PreTrainedConfig.from_pretrained(pol_path)
+    cfg.pretrained_path = pol_path
+    cfg.device = dev
+    pol = make_policy(cfg, ds_meta=dataset.meta)
+    pre, post = make_pre_post_processors(
+        policy_cfg=cfg,
+        pretrained_path=pol_path,
+        dataset_stats=dataset.meta.stats,
+        preprocessor_overrides={"device_processor": {"device": dev}},
+    )
+    for p in (pol, pre, post):
+        if hasattr(p, "reset"):
+            p.reset()
+
+    torch_device = get_safe_torch_device(dev)
+    diffs, times = [], []
+    for i in range(steps):
+        frame = dataset[ep_from + i % max(ep_to - ep_from, 1)]
+        # Rebuild the dataset-format observation that record_loop feeds to predict_action.
+        obs = {}
+        for key in dataset.meta.features:
+            if not key.startswith("observation."):
+                continue
+            t = frame[key]
+            if "image" in key:  # (C,H,W) float [0,1] -> (H,W,C) uint8, as a camera would produce
+                obs[key] = (t.permute(1, 2, 0) * 255).to(torch.uint8).numpy()
+            else:
+                obs[key] = t.numpy().astype(np.float32)
+        t0 = time.perf_counter()
+        action = predict_action(
+            observation=obs,
+            policy=pol,
+            device=torch_device,
+            preprocessor=pre,
+            postprocessor=post,
+            use_amp=pol.config.use_amp,
+            task=dataset.meta.tasks.index[0] if len(dataset.meta.tasks) else "",
+            robot_type=dataset.meta.robot_type,
+        )
+        times.append(time.perf_counter() - t0)
+        action = action.cpu().numpy() if hasattr(action, "cpu") else np.asarray(action)
+        diffs.append(np.abs(action - frame["action"].numpy()).mean())
+
+    typer.secho(
+        f"OK: {steps} inference steps on {dev} | "
+        f"first {times[0] * 1e3:.0f} ms, avg {np.mean(times[1:]) * 1e3 if len(times) > 1 else times[0] * 1e3:.1f} ms "
+        f"(~{1.0 / np.mean(times[1:]) if len(times) > 1 else 1.0 / times[0]:.0f} Hz) | "
+        f"mean |action - recorded| = {np.mean(diffs):.2f} deg",
+        fg="green",
+    )
 
 
 @app.command()
