@@ -320,8 +320,25 @@ pixi run upload --repo-id record-test            # → huggingface.co/datasets/<
 pixi run upload --repo-id record-test --private --tags so101,demo
 ```
 
-つまり全体の流れは **記録 → replay(確認) → upload(任意) → 学習 → 評価** です。学習済みポリシーは
-`train --push-repo-id <name>` で push できます（既定はローカル保持）。
+**データセットの選別: 確認 → 悪いエピソードを削除 → その分だけ撮り直し。**
+
+```bash
+pixi run viz --repo-id record-test --episode 0     # 各エピソードを確認（0,1,2,…）
+pixi run drop --repo-id record-test --episodes 1,3 # 悪いものを削除（バックアップ自動作成）
+pixi run record --task "Grab the black cube" --repo-id record-test \
+  --resume --episodes 2                            # 代わりに 2 本を新規録画（追記）
+```
+
+注意（すべて実データで検証済み）:
+- `drop` は in-place 編集で、データセットの隣にバックアップ（`<name>_old`）を残します。
+  問題なければバックアップは削除して構いません。
+- `drop` 後、残りのエピソードは **0 から振り直され**ます。再度 drop する前に `viz` で
+  インデックスを確認してください。
+- `--resume` 時の `--episodes N` は「**追加で N 本**」の意味です（`--overwrite` と `--resume` は
+  同時指定不可）。
+
+つまり全体の流れは **記録 → viz/replay(確認) → drop+撮り直し(選別) → upload(任意) → 学習 → 評価**
+です。学習済みポリシーは `train --push-repo-id <name>` で push できます（既定はローカル保持）。
 
 ### 6.5 SSH 先の Linux で検証する — ロボット不要
 

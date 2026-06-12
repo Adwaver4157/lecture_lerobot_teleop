@@ -423,7 +423,8 @@ def record(
     reset_time: float = typer.Option(None, "--reset-time", help="Seconds to reset the scene between episodes (lerobot default 60)."),
     fps: int = typer.Option(30, "--fps"),
     push: bool = typer.Option(False, "--push/--no-push", help="Upload the dataset to the Hugging Face Hub (needs `hf auth login`)."),
-    overwrite: bool = typer.Option(False, "--overwrite", help="Delete an existing local dataset with this id before recording (lerobot won't overwrite on its own; use --resume=true to append instead)."),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Delete an existing local dataset with this id before recording (lerobot won't overwrite on its own)."),
+    resume: bool = typer.Option(False, "--resume", help="Append to an existing dataset; --episodes then means N *additional* episodes (e.g. after `drop`)."),
     max_rel: float = typer.Option(None, "--max-rel", help="Safety cap: max degrees a follower joint may move per control step (e.g. 5)."),
     display: bool = typer.Option(True, "--display/--no-display"),
     cameras: bool = typer.Option(True, "--cameras/--no-cameras"),
@@ -433,10 +434,12 @@ def record(
     Recording starts automatically; control it from the (focused) terminal with the arrow keys:
     Right=stop the current episode and continue, Left=re-record it, Esc=stop the whole session.
     """
+    if overwrite and resume:
+        raise typer.BadParameter("--overwrite and --resume are mutually exclusive.")
     cfg = _load()
     lead = _require(cfg, "leader")
     foll = _require(cfg, "follower")
-    repo = _resolve_repo(repo_id, for_creation=True)
+    repo = _resolve_repo(repo_id, for_creation=not resume)
     _maybe_overwrite(repo, overwrite)
     cmd = [
         "lerobot-record",
@@ -448,6 +451,8 @@ def record(
         f"--dataset.fps={fps}",
         f"--dataset.push_to_hub={'true' if push else 'false'}",
     ]
+    if resume:
+        cmd.append("--resume=true")
     if episode_time is not None:
         cmd.append(f"--dataset.episode_time_s={episode_time}")
     if reset_time is not None:
@@ -575,6 +580,31 @@ def viz(
 ) -> None:
     """Visualize a recorded episode (frames, states, actions) in a Rerun viewer (lerobot-dataset-viz)."""
     cmd = ["lerobot-dataset-viz", "--repo-id", _resolve_repo(repo_id), "--episode-index", str(episode)]
+    _run(cmd + list(ctx.args))
+
+
+@app.command(context_settings=PASSTHROUGH)
+def drop(
+    ctx: typer.Context,
+    repo_id: str = typer.Option(..., "--repo-id", help="Dataset id ('name' → prefixed with your HF user)."),
+    episodes: str = typer.Option(..., "--episodes", help="Comma-separated episode indices to delete, e.g. 0,2,5"),
+) -> None:
+    """Delete bad episodes from a local dataset in place (lerobot-edit-dataset; a backup is created).
+
+    Remaining episodes are re-indexed from 0, so re-check indices with `viz` before dropping again.
+    Re-record the dropped count afterwards with: record --resume --episodes N.
+    """
+    repo = _resolve_repo(repo_id)
+    try:
+        idx = sorted({int(e) for e in episodes.split(",")})
+    except ValueError:
+        raise typer.BadParameter(f"--episodes must be comma-separated integers, got '{episodes}'")
+    cmd = [
+        "lerobot-edit-dataset",
+        f"--repo_id={repo}",
+        "--operation.type=delete_episodes",
+        f"--operation.episode_indices=[{', '.join(map(str, idx))}]",
+    ]
     _run(cmd + list(ctx.args))
 
 

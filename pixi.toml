@@ -69,6 +69,7 @@ hf-login = "hf auth login"                           # log in before pushing dat
 record = "python scripts/so101.py record"            # usage: pixi run record --task "..." --repo-id name
 replay = "python scripts/so101.py replay"            # usage: pixi run replay --repo-id name --episode 0
 viz = "python scripts/so101.py viz"                  # usage: pixi run viz --repo-id name --episode 0
+drop = "python scripts/so101.py drop"                # usage: pixi run drop --repo-id name --episodes 0,2
 upload = "python scripts/so101.py upload"            # usage: pixi run upload --repo-id name  (existing local dataset)
 train = "python scripts/so101.py train"              # usage: pixi run train --repo-id name [--policy act]
 eval = "python scripts/so101.py eval"                # usage: pixi run eval --policy <ckpt> --task "..." --repo-id eval_name

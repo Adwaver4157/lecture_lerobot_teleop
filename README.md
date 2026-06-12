@@ -339,9 +339,26 @@ pixi run upload --repo-id record-test            # → huggingface.co/datasets/<
 pixi run upload --repo-id record-test --private --tags so101,demo
 ```
 
-So the full pipeline is: **record → replay (check) → upload (optional) → train →
-eval**. The trained policy is pushed with `train --push-repo-id <name>` (or kept
-local by default).
+**Curate a dataset: inspect → drop bad episodes → re-record just those.**
+
+```bash
+pixi run viz --repo-id record-test --episode 0     # inspect each episode (0,1,2,…)
+pixi run drop --repo-id record-test --episodes 1,3 # delete the bad ones (backup auto-created)
+pixi run record --task "Grab the black cube" --repo-id record-test \
+  --resume --episodes 2                            # record 2 NEW episodes to replace them
+```
+
+Notes (all verified on real data):
+- `drop` edits in place and keeps a backup next to the dataset (`<name>_old`);
+  delete the backup once you're happy.
+- After `drop`, remaining episodes are **re-indexed from 0** — re-check with
+  `viz` before dropping again.
+- With `--resume`, `--episodes N` means N **additional** episodes appended to
+  the dataset (`--overwrite` and `--resume` are mutually exclusive).
+
+So the full pipeline is: **record → viz/replay (check) → drop + re-record (curate)
+→ upload (optional) → train → eval**. The trained policy is pushed with
+`train --push-repo-id <name>` (or kept local by default).
 
 ### 6.5 Verify on a remote (SSH) Linux machine — no robot needed
 
