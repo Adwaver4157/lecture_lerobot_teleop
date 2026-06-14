@@ -209,6 +209,17 @@ pixi run setup-motors leader
 
 その後 `pixi run check <role>` を再実行 → 6 個すべて応答すればOK。
 
+**特定のモータだけ振り直す**こともできます（一部だけ間違っていた時に便利）。プロンプトで
+**そのモータだけ**をバスに接続してください:
+
+```bash
+pixi run setup-motors follower --motor 2      # id 指定
+pixi run setup-motors follower --motor shoulder_lift   # 名前指定
+pixi run setup-motors follower --motor 2,4    # 複数（1個ずつ）
+```
+
+（素の `lerobot-setup-motors` CLI は全6個のみ。`--motor` は lerobot の単体モータ用プリミティブを公開したものです。）
+
 > **一部だけ（例: id 2 と 4）欠落し、他は正常な場合**は、白紙アームのケースでは**ありません**
 > （id は存在するが応答していない）。ほぼ**そのモータへの配線または電源**が原因です（欠落モータの
 > 両側コネクタを挿し直し、通電を確認）。あるいは未割り当てなら `setup-motors <role>` を再実行。

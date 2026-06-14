@@ -356,18 +356,68 @@ def check(role: Role) -> None:
 
 
 @app.command("setup-motors", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-def setup_motors(ctx: typer.Context, role: Role) -> None:
-    """Run lerobot-setup-motors for ROLE using the saved port (assign motor IDs). Extra flags forwarded."""
+def setup_motors(
+    ctx: typer.Context,
+    role: Role,
+    motor: str = typer.Option(
+        None,
+        "--motor",
+        help="Assign only these motor(s) by name or id, e.g. 'shoulder_lift', '2', or '2,4'. "
+        "Omit to set all six (the standard lerobot flow).",
+    ),
+) -> None:
+    """Assign Feetech motor IDs for ROLE using the saved port.
+
+    Without --motor: runs the standard lerobot-setup-motors (all six, one at a time).
+    With --motor: re-assigns just the given motor(s) — connect ONLY that motor to the bus
+    when prompted (same per-motor primitive the full flow uses, exposed for fixing one joint).
+    """
     info = _require(_load(), role.value)
-    p = ROLE_META[role.value]["prefix"]
-    cmd = [
-        "lerobot-setup-motors",
-        f"--{p}.type={info['type']}",
-        f"--{p}.port={info['port']}",
-        *ctx.args,
-    ]
-    typer.secho("$ " + " ".join(cmd), fg="blue")
-    raise typer.Exit(subprocess.run(cmd).returncode)
+    if not motor:
+        p = ROLE_META[role.value]["prefix"]
+        cmd = [
+            "lerobot-setup-motors",
+            f"--{p}.type={info['type']}",
+            f"--{p}.port={info['port']}",
+            *ctx.args,
+        ]
+        _run(cmd)
+
+    # Single/selected-motor path via the bus primitive.
+    from lerobot.motors import Motor, MotorNormMode
+    from lerobot.motors.feetech import FeetechMotorsBus
+
+    id_to_name = {i: n for n, i in MOTOR_IDS.items()}
+    names = []
+    for tok in motor.split(","):
+        tok = tok.strip()
+        if tok.isdigit():
+            mid = int(tok)
+            if mid not in id_to_name:
+                raise typer.BadParameter(f"id {mid} is not 1-6 (motors: {MOTOR_IDS})")
+            names.append(id_to_name[mid])
+        elif tok in MOTOR_IDS:
+            names.append(tok)
+        else:
+            raise typer.BadParameter(f"unknown motor '{tok}'. Use a name {list(MOTOR_IDS)} or id 1-6.")
+
+    motors = {n: Motor(i, "sts3215", MotorNormMode.RANGE_M100_100) for n, i in MOTOR_IDS.items()}
+    bus = FeetechMotorsBus(port=info["port"], motors=motors)
+    try:
+        for name in names:
+            typer.secho(
+                f"Connect the controller board to the '{name}' (id {MOTOR_IDS[name]}) motor ONLY, then press Enter...",
+                fg="yellow",
+            )
+            input()
+            bus.setup_motor(name)
+            typer.secho(f"'{name}' id set to {MOTOR_IDS[name]}", fg="green")
+    finally:
+        # Only one motor is physically on the bus, so the default disconnect (which
+        # disables torque on ALL six mapped motors) would fail on the absent ids.
+        if bus.is_connected:
+            bus.disconnect(disable_torque=False)
+    raise typer.Exit(0)
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})

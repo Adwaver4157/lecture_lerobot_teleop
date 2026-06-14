@@ -218,6 +218,18 @@ pixi run setup-motors leader
 
 Then re-run `pixi run check <role>` — all six should now respond.
 
+**Re-assign just one (or a few) motors** instead of all six — useful when only a
+couple were wrong. Connect **only that motor** to the bus when prompted:
+
+```bash
+pixi run setup-motors follower --motor 2      # by id
+pixi run setup-motors follower --motor shoulder_lift   # by name
+pixi run setup-motors follower --motor 2,4    # a few, one at a time
+```
+
+(The plain `lerobot-setup-motors` CLI only does all six; `--motor` exposes
+lerobot's per-motor primitive.)
+
 > **A few motors missing (e.g. ids 2 and 4) but others fine?** That's *not* the
 > blank-arm case — the ids exist but those motors aren't answering. It's almost
 > always the **daisy-chain cable or power** to those joints (reseat the connectors
